@@ -2,6 +2,7 @@ import React, { useState, useMemo, useRef } from "react";
 import {
   Plus, Pencil, Trash2, X, Search, ChevronRight, AlertTriangle,
   Check, CheckCircle2, XCircle, RotateCcw, Lock, Upload,
+  ChevronLeft, ChevronsLeft, ChevronsRight
 } from "lucide-react";
 import * as XLSX from "xlsx";
 
@@ -99,6 +100,8 @@ const EXCEL_COLUMNS = {
   link: ["Sno", "GRP Unit (State/District/Station)", "RPF Unit (Zone/Division/Post)"],
 };
 
+const ITEMS_PER_PAGE = 20;
+
 /* ------------------------------ FILE PARSING -----------------------------*/
 // Reads an .xlsx / .xls workbook (via SheetJS) and returns a plain
 // array-of-string-arrays — the sheet exactly as it appears, every cell
@@ -193,6 +196,59 @@ function StateForm({ data, set, mode }) {
         <TextInput value={data.address} onChange={(v) => set("address", v)} placeholder="Enter Location Address" />
       </Field>
     </>
+  );
+}
+
+/* ----------------------------- PAGINATION CONTROLS ------------------------ */
+function TablePagination({ currentPage, totalItems, onPageChange }) {
+  const totalPages = Math.ceil(totalItems / ITEMS_PER_PAGE) || 1;
+  if (totalPages <= 1) return null;
+
+  return (
+    <div className="flex items-center justify-between px-4 py-3" style={{ borderTop: `1px solid ${C.line}`, background: C.bg }}>
+      <div className="text-xs" style={{ color: C.sub }}>
+        Showing <span className="font-semibold">{Math.min((currentPage - 1) * ITEMS_PER_PAGE + 1, totalItems)}</span> to{" "}
+        <span className="font-semibold">{Math.min(currentPage * ITEMS_PER_PAGE, totalItems)}</span> of{" "}
+        <span className="font-semibold">{totalItems}</span> entries
+      </div>
+      <div className="flex items-center gap-1">
+        <button
+          onClick={() => onPageChange(1)}
+          disabled={currentPage === 1}
+          className="p-1 rounded hover:bg-black/[0.05] disabled:opacity-40"
+          style={{ color: C.navy }}
+        >
+          <ChevronsLeft size={16} />
+        </button>
+        <button
+          onClick={() => onPageChange(currentPage - 1)}
+          disabled={currentPage === 1}
+          className="p-1 rounded hover:bg-black/[0.05] disabled:opacity-40 mr-1"
+          style={{ color: C.navy }}
+        >
+          <ChevronLeft size={16} />
+        </button>
+        <span className="text-xs px-2 py-1 rounded" style={{ background: C.card, color: C.ink, border: `1px solid ${C.line}` }}>
+          Page <b>{currentPage}</b> of <b>{totalPages}</b>
+        </span>
+        <button
+          onClick={() => onPageChange(currentPage + 1)}
+          disabled={currentPage === totalPages}
+          className="p-1 rounded hover:bg-black/[0.05] disabled:opacity-40 ml-1"
+          style={{ color: C.navy }}
+        >
+          <ChevronRight size={16} />
+        </button>
+        <button
+          onClick={() => onPageChange(totalPages)}
+          disabled={currentPage === totalPages}
+          className="p-1 rounded hover:bg-black/[0.05] disabled:opacity-40"
+          style={{ color: C.navy }}
+        >
+          <ChevronsRight size={16} />
+        </button>
+      </div>
+    </div>
   );
 }
 
@@ -408,7 +464,23 @@ export default function GrpMasterConsole() {
 
   const [activeTab, setActiveTab] = useState("state");
   const [view, setView] = useState("active"); // "active" | "incorrect"
-  const [query, setQuery] = useState("");
+
+  // Separate individual queries per table tab for clean encapsulated searching
+  const [queries, setQueries] = useState({
+    state: "",
+    district: "",
+    station: "",
+    link: ""
+  });
+
+  // Unique pagination states running across tables
+  const [pages, setPages] = useState({
+    state: 1,
+    district: 1,
+    station: 1,
+    link: 1
+  });
+
   const [modal, setModal] = useState(null); // { mode, data }
   const [error, setError] = useState("");
   const [confirmAction, setConfirmAction] = useState(null);
@@ -451,6 +523,15 @@ export default function GrpMasterConsole() {
       }
       return { ...m, data };
     });
+  }
+
+  function handleQueryChange(val) {
+    setQueries(prev => ({ ...prev, [activeTab]: val }));
+    setPages(prev => ({ ...prev, [activeTab]: 1 })); // reset page to 1 on filter
+  }
+
+  function handlePageChange(newPage) {
+    setPages(prev => ({ ...prev, [activeTab]: newPage }));
   }
 
   function validate(tab, d) {
@@ -655,16 +736,22 @@ export default function GrpMasterConsole() {
   const incorrectCount = rowsForTab.filter((r) => r.status === "incorrect").length;
 
   const filtered = useMemo(() => {
-    const q = query.trim().toLowerCase();
+    const q = queries[activeTab].trim().toLowerCase();
     const byView = rowsForTab.filter((r) => (view === "incorrect" ? r.status === "incorrect" : r.status !== "incorrect"));
     if (!q) return byView;
     return byView.filter((r) => Object.values(r).some((v) => String(v).toLowerCase().includes(q)));
-  }, [rowsForTab, view, query]);
+  }, [rowsForTab, view, queries, activeTab]);
+
+  // Paginated visible standard rows (state, district, station)
+  const paginatedRows = useMemo(() => {
+    const startIdx = (pages[activeTab] - 1) * ITEMS_PER_PAGE;
+    return filtered.slice(startIdx, startIdx + ITEMS_PER_PAGE);
+  }, [filtered, pages, activeTab]);
 
   // Links grouped by their GRP Unit (state/district/station), so a station that's
   // mapped to several RPF posts shows as one expandable row instead of N flat rows.
   const groupedLinks = useMemo(() => {
-    const q = query.trim().toLowerCase();
+    const q = queries.link.trim().toLowerCase();
     const matches = links.filter((r) => {
       const inView = view === "incorrect" ? r.status === "incorrect" : r.status !== "incorrect";
       if (!inView) return false;
@@ -678,7 +765,14 @@ export default function GrpMasterConsole() {
       map.get(key).push(r);
     });
     return Array.from(map.entries()).map(([key, entries]) => ({ key, entries }));
-  }, [links, view, query]);
+  }, [links, view, queries.link]);
+
+  // Paginated grouped links array
+  const paginatedGroupedLinks = useMemo(() => {
+    if (activeTab !== "link") return [];
+    const startIdx = (pages.link - 1) * ITEMS_PER_PAGE;
+    return groupedLinks.slice(startIdx, startIdx + ITEMS_PER_PAGE);
+  }, [groupedLinks, pages.link, activeTab]);
 
   const counts = { state: states.length, district: districts.length, station: stations.length, link: links.length };
   const isEmpty = activeTab === "link" ? groupedLinks.length === 0 : filtered.length === 0;
@@ -697,14 +791,13 @@ export default function GrpMasterConsole() {
             State &rarr; District &rarr; GRP Station &rarr; RPF Link
           </h1>
 
-
           <div className="flex items-center mt-6 overflow-x-auto pb-1">
             {TABS.map((t, i) => (
               <React.Fragment key={t.id}>
                 {i > 0 && <div className="h-px w-8 md:w-14 shrink-0" style={{ background: "#3C557C" }} />}
-                <button onClick={() => { setActiveTab(t.id); setView("active"); setQuery(""); }} className="flex items-center gap-2 shrink-0 px-1 py-1">
+                <button onClick={() => { setActiveTab(t.id); setView("active"); }} className="flex items-center gap-2 shrink-0 px-1 py-1">
                   <span className="w-3.5 h-3.5 rounded-full shrink-0" style={{ background: activeTab === t.id ? C.amber : "transparent", border: `2px solid ${activeTab === t.id ? C.amber : "#5B739A"}` }} />
-                  <span className="text-sm md:text-base whitespace-nowrap" style={{ fontFamily: "Barlow Semi Condensed, sans-serif", fontWeight: activeTab === t.id ? 700 : 600, color: activeTab === t.id ? "#FFFFFF" : "#93A7C4" }}>{t.label}</span>
+                  <span className="text-sm md:text-base whitespace-nowrap" style={{ fontFamily: "Barlow Semi Condensed, sans-serif", fontProject: activeTab === t.id ? 700 : 600, color: activeTab === t.id ? "#FFFFFF" : "#93A7C4" }}>{t.label}</span>
                   <span className="text-xs px-1.5 rounded" style={{ background: "rgba(255,255,255,0.1)", color: "#C7D3E3", fontFamily: "IBM Plex Mono, monospace" }}>{counts[t.id]}</span>
                 </button>
               </React.Fragment>
@@ -718,7 +811,7 @@ export default function GrpMasterConsole() {
         <div className="flex flex-col sm:flex-row gap-3 sm:items-center sm:justify-between">
           <div className="relative w-full sm:w-72">
             <Search size={16} className="absolute left-3 top-1/2 -translate-y-1/2" style={{ color: C.sub }} />
-            <input value={query} onChange={(e) => setQuery(e.target.value)} placeholder={`Search ${TABS.find((t) => t.id === activeTab).plural.toLowerCase()}…`} className="w-full rounded-md border pl-9 pr-3 py-2 text-sm focus:outline-none" style={{ borderColor: C.line, background: C.card }} />
+            <input value={queries[activeTab]} onChange={(e) => handleQueryChange(e.target.value)} placeholder={`Search ${TABS.find((t) => t.id === activeTab).plural.toLowerCase()}…`} className="w-full rounded-md border pl-9 pr-3 py-2 text-sm focus:outline-none" style={{ borderColor: C.line, background: C.card }} />
           </div>
           <div className="flex gap-2 shrink-0">
             <input
@@ -744,10 +837,10 @@ export default function GrpMasterConsole() {
 
         <div className="flex items-center justify-between flex-wrap gap-2">
           <div className="flex gap-2">
-            <button onClick={() => setView("active")} className="px-3 py-1.5 rounded-full text-xs font-semibold" style={{ background: view === "active" ? C.navy : C.card, color: view === "active" ? "#fff" : C.sub, border: `1px solid ${view === "active" ? C.navy : C.line}` }}>
+            <button onClick={() => { setView("active"); setPages(p => ({ ...p, [activeTab]: 1 })); }} className="px-3 py-1.5 rounded-full text-xs font-semibold" style={{ background: view === "active" ? C.navy : C.card, color: view === "active" ? "#fff" : C.sub, border: `1px solid ${view === "active" ? C.navy : C.line}` }}>
               Active ({activeCount})
             </button>
-            <button onClick={() => setView("incorrect")} className="px-3 py-1.5 rounded-full text-xs font-semibold flex items-center gap-1" style={{ background: view === "incorrect" ? C.danger : C.card, color: view === "incorrect" ? "#fff" : C.sub, border: `1px solid ${view === "incorrect" ? C.danger : C.line}` }}>
+            <button onClick={() => { setView("incorrect"); setPages(p => ({ ...p, [activeTab]: 1 })); }} className="px-3 py-1.5 rounded-full text-xs font-semibold flex items-center gap-1" style={{ background: view === "incorrect" ? C.danger : C.card, color: view === "incorrect" ? "#fff" : C.sub, border: `1px solid ${view === "incorrect" ? C.danger : C.line}` }}>
               <XCircle size={13} /> Incorrect ({incorrectCount})
             </button>
           </div>
@@ -757,120 +850,132 @@ export default function GrpMasterConsole() {
         </div>
       </div>
 
-      {/* Table */}
+      {/* Table Content */}
       <div className="max-w-6xl mx-auto px-5 md:px-8 py-5">
         <div className="rounded-lg overflow-hidden" style={{ background: C.card, border: `1px solid ${C.line}` }}>
           {activeTab === "state" && (
-            <Table cols={["State Code", "State Name", "Str Code", "Location Address", "Verification"]} rows={filtered} renderRow={(r) => [
-              <Mono>{r.code}</Mono>, r.name, <Mono>{r.strCode}</Mono>, r.address,
-              <RowActions status={r.status} view={view}
-                onEdit={() => openEdit(r)} onDelete={() => askDelete("state", r, r.name)}
-                onMarkCorrect={() => markStatus("state", r, "correct")} onMarkIncorrect={() => markStatus("state", r, "incorrect")}
-                onRestore={() => markStatus("state", r, "pending")} onDeletePermanent={() => askDelete("state", r, r.name)} />,
-            ]} />
+            <>
+              <Table cols={["State Code", "State Name", "Str Code", "Location Address", "Verification"]} rows={paginatedRows} renderRow={(r) => [
+                <Mono>{r.code}</Mono>, r.name, <Mono>{r.strCode}</Mono>, r.address,
+                <RowActions status={r.status} view={view}
+                  onEdit={() => openEdit(r)} onDelete={() => askDelete("state", r, r.name)}
+                  onMarkCorrect={() => markStatus("state", r, "correct")} onMarkIncorrect={() => markStatus("state", r, "incorrect")}
+                  onRestore={() => markStatus("state", r, "pending")} onDeletePermanent={() => askDelete("state", r, r.name)} />,
+              ]} />
+              <TablePagination currentPage={pages.state} totalItems={filtered.length} onPageChange={(p) => handlePageChange(p)} />
+            </>
           )}
           {activeTab === "district" && (
-            <Table cols={["State Name", "District Code", "District Name", "Str Code", "Shift", "Location Address", "Verification"]} rows={filtered} renderRow={(r) => [
-              stateName(r.stateCode), <Mono>{r.code}</Mono>, r.name, <Mono>{r.strCode}</Mono>, r.shiftType || "—", r.address,
-              <RowActions status={r.status} view={view}
-                onEdit={() => openEdit(r)} onDelete={() => askDelete("district", r, r.name)}
-                onMarkCorrect={() => markStatus("district", r, "correct")} onMarkIncorrect={() => markStatus("district", r, "incorrect")}
-                onRestore={() => markStatus("district", r, "pending")} onDeletePermanent={() => askDelete("district", r, r.name)} />,
-            ]} />
+            <>
+              <Table cols={["State Name", "District Code", "District Name", "Str Code", "Shift", "Location Address", "Verification"]} rows={paginatedRows} renderRow={(r) => [
+                stateName(r.stateCode), <Mono>{r.code}</Mono>, r.name, <Mono>{r.strCode}</Mono>, r.shiftType || "—", r.address,
+                <RowActions status={r.status} view={view}
+                  onEdit={() => openEdit(r)} onDelete={() => askDelete("district", r, r.name)}
+                  onMarkCorrect={() => markStatus("district", r, "correct")} onMarkIncorrect={() => markStatus("district", r, "incorrect")}
+                  onRestore={() => markStatus("district", r, "pending")} onDeletePermanent={() => askDelete("district", r, r.name)} />,
+              ]} />
+              <TablePagination currentPage={pages.district} totalItems={filtered.length} onPageChange={(p) => handlePageChange(p)} />
+            </>
           )}
           {activeTab === "station" && (
-            <Table cols={["State Name", "District Name", "Station Code", "Station Name", "Str Code", "Location Address", "Verification"]} rows={filtered} renderRow={(r) => [
-              stateName(r.stateCode), districtName(r.stateCode, r.districtCode), <Mono>{r.code}</Mono>, r.name, <Mono>{r.strCode}</Mono>, r.address,
-              <RowActions status={r.status} view={view}
-                onEdit={() => openEdit(r)} onDelete={() => askDelete("station", r, r.name)}
-                onMarkCorrect={() => markStatus("station", r, "correct")} onMarkIncorrect={() => markStatus("station", r, "incorrect")}
-                onRestore={() => markStatus("station", r, "pending")} onDeletePermanent={() => askDelete("station", r, r.name)} />,
-            ]} />
+            <>
+              <Table cols={["State Name", "District Name", "Station Code", "Station Name", "Str Code", "Location Address", "Verification"]} rows={paginatedRows} renderRow={(r) => [
+                stateName(r.stateCode), districtName(r.stateCode, r.districtCode), <Mono>{r.code}</Mono>, r.name, <Mono>{r.strCode}</Mono>, r.address,
+                <RowActions status={r.status} view={view}
+                  onEdit={() => openEdit(r)} onDelete={() => askDelete("station", r, r.name)}
+                  onMarkCorrect={() => markStatus("station", r, "correct")} onMarkIncorrect={() => markStatus("station", r, "incorrect")}
+                  onRestore={() => markStatus("station", r, "pending")} onDeletePermanent={() => askDelete("station", r, r.name)} />,
+              ]} />
+              <TablePagination currentPage={pages.station} totalItems={filtered.length} onPageChange={(p) => handlePageChange(p)} />
+            </>
           )}
           {activeTab === "link" && (
-            <div className="overflow-x-auto">
-              <table className="w-full text-sm" style={{ borderCollapse: "collapse" }}>
-                <thead>
-                  <tr style={{ background: C.bg }}>
-                    <th className="text-left px-4 py-3 font-semibold whitespace-nowrap" style={{ color: C.sub, fontSize: 11, textTransform: "uppercase", letterSpacing: 0.5, borderBottom: `1px solid ${C.line}` }}>GRP Unit</th>
-                    <th className="text-right px-4 py-3 font-semibold whitespace-nowrap" style={{ color: C.sub, fontSize: 11, textTransform: "uppercase", letterSpacing: 0.5, borderBottom: `1px solid ${C.line}` }}>Linked RPF Posts</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {groupedLinks.map(({ key, entries }) => {
-                    const first = entries[0];
-                    const expanded = expandedLinks.has(key);
-                    const label = `${stateName(first.stateCode)} / ${districtName(first.stateCode, first.districtCode)} / ${stationName(first.stateCode, first.districtCode, first.stationCode)}`;
-                    const correctCt = entries.filter((e) => e.status === "correct").length;
-                    return (
-                      <React.Fragment key={key}>
-                        <tr
-                          onClick={() => toggleExpandLink(key)}
-                          className="cursor-pointer"
-                          style={{ borderBottom: expanded ? "none" : `1px solid ${C.line}`, background: expanded ? C.bg : "transparent" }}
-                        >
-                          <td className="px-4 py-3 align-top">
-                            <div className="flex items-center gap-2">
-                              <ChevronRight size={14} style={{ transform: expanded ? "rotate(90deg)" : "none", transition: "transform 0.15s ease", color: C.sub, flexShrink: 0 }} />
-                              <span style={{ fontWeight: 600 }}>{label}</span>
-                            </div>
-                          </td>
-                          <td className="px-4 py-3 align-top text-right">
-                            <span className="text-xs px-2.5 py-1 rounded-full" style={{ background: "#EAF0F8", color: C.navy, fontFamily: "IBM Plex Mono, monospace" }}>
-                              {entries.length} post{entries.length !== 1 ? "s" : ""}{view === "active" ? ` · ${correctCt} verified` : ""}
-                            </span>
-                          </td>
-                        </tr>
-                        {expanded && (
-                          <tr style={{ borderBottom: `1px solid ${C.line}` }}>
-                            <td colSpan={2} className="px-0 py-0">
-                              <table className="w-full text-sm" style={{ borderCollapse: "collapse", background: "#FAF9F5" }}>
-                                <tbody>
-                                  {entries.map((r) => (
-                                    <tr key={r.id} style={{ borderTop: `1px solid ${C.line}` }}>
-                                      <td className="py-2.5 align-top" style={{ paddingLeft: 40, paddingRight: 16, width: "60%" }}>
-                                        <span style={{ color: C.sub }}>{r.zone} / {r.division} / </span><b>{r.post}</b>
-                                      </td>
-                                      <td className="px-4 py-2.5 align-top text-right">
-                                        <RowActions status={r.status} view={view}
-                                          onEdit={() => openEdit(r)}
-                                          onDelete={() => askDelete("link", r, `${stationName(r.stateCode, r.districtCode, r.stationCode)} ↔ ${r.post}`)}
-                                          onMarkCorrect={() => markStatus("link", r, "correct")}
-                                          onMarkIncorrect={() => markStatus("link", r, "incorrect")}
-                                          onRestore={() => markStatus("link", r, "pending")}
-                                          onDeletePermanent={() => askDelete("link", r, `${stationName(r.stateCode, r.districtCode, r.stationCode)} ↔ ${r.post}`)} />
-                                      </td>
-                                    </tr>
-                                  ))}
-                                  <tr style={{ borderTop: `1px solid ${C.line}` }}>
-                                    <td colSpan={2} className="py-2 px-4" style={{ paddingLeft: 40 }}>
-                                      <button
-                                        onClick={() => openAddRpfPostForGroup(first)}
-                                        className="flex items-center gap-1 text-xs font-semibold"
-                                        style={{ color: C.amberDeep }}
-                                      >
-                                        <Plus size={13} /> Link another RPF Post here
-                                      </button>
-                                    </td>
-                                  </tr>
-                                </tbody>
-                              </table>
+            <>
+              <div className="overflow-x-auto">
+                <table className="w-full text-sm" style={{ borderCollapse: "collapse" }}>
+                  <thead>
+                    <tr style={{ background: C.bg }}>
+                      <th className="text-left px-4 py-3 font-semibold whitespace-nowrap" style={{ color: C.sub, fontSize: 11, textTransform: "uppercase", letterSpacing: 0.5, borderBottom: `1px solid ${C.line}` }}>GRP Unit</th>
+                      <th className="text-right px-4 py-3 font-semibold whitespace-nowrap" style={{ color: C.sub, fontSize: 11, textTransform: "uppercase", letterSpacing: 0.5, borderBottom: `1px solid ${C.line}` }}>Linked RPF Posts</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {paginatedGroupedLinks.map(({ key, entries }) => {
+                      const first = entries[0];
+                      const expanded = expandedLinks.has(key);
+                      const label = `${stateName(first.stateCode)} / ${districtName(first.stateCode, first.districtCode)} / ${stationName(first.stateCode, first.districtCode, first.stationCode)}`;
+                      const correctCt = entries.filter((e) => e.status === "correct").length;
+                      return (
+                        <React.Fragment key={key}>
+                          <tr
+                            onClick={() => toggleExpandLink(key)}
+                            className="cursor-pointer"
+                            style={{ borderBottom: expanded ? "none" : `1px solid ${C.line}`, background: expanded ? C.bg : "transparent" }}
+                          >
+                            <td className="px-4 py-3 align-top">
+                              <div className="flex items-center gap-2">
+                                <ChevronRight size={14} style={{ transform: expanded ? "rotate(90deg)" : "none", transition: "transform 0.15s ease", color: C.sub, flexShrink: 0 }} />
+                                <span style={{ fontWeight: 600 }}>{label}</span>
+                              </div>
+                            </td>
+                            <td className="px-4 py-3 align-top text-right">
+                              <span className="text-xs px-2.5 py-1 rounded-full" style={{ background: "#EAF0F8", color: C.navy, fontFamily: "IBM Plex Mono, monospace" }}>
+                                {entries.length} post{entries.length !== 1 ? "s" : ""}{view === "active" ? ` · ${correctCt} verified` : ""}
+                              </span>
                             </td>
                           </tr>
-                        )}
-                      </React.Fragment>
-                    );
-                  })}
-                </tbody>
-              </table>
-            </div>
+                          {expanded && (
+                            <tr style={{ borderBottom: `1px solid ${C.line}` }}>
+                              <td colSpan={2} className="px-0 py-0">
+                                <table className="w-full text-sm" style={{ borderCollapse: "collapse", background: "#FAF9F5" }}>
+                                  <tbody>
+                                    {entries.map((r) => (
+                                      <tr key={r.id} style={{ borderTop: `1px solid ${C.line}` }}>
+                                        <td className="py-2.5 align-top" style={{ paddingLeft: 40, paddingRight: 16, width: "60%" }}>
+                                          <span style={{ color: C.sub }}>{r.zone} / {r.division} / </span><b>{r.post}</b>
+                                        </td>
+                                        <td className="px-4 py-2.5 align-top text-right">
+                                          <RowActions status={r.status} view={view}
+                                            onEdit={() => openEdit(r)}
+                                            onDelete={() => askDelete("link", r, `${stationName(r.stateCode, r.districtCode, r.stationCode)} ↔ ${r.post}`)}
+                                            onMarkCorrect={() => markStatus("link", r, "correct")}
+                                            onMarkIncorrect={() => markStatus("link", r, "incorrect")}
+                                            onRestore={() => markStatus("link", r, "pending")}
+                                            onDeletePermanent={() => askDelete("link", r, `${stationName(r.stateCode, r.districtCode, r.stationCode)} ↔ ${r.post}`)} />
+                                        </td>
+                                      </tr>
+                                    ))}
+                                    <tr style={{ borderTop: `1px solid ${C.line}` }}>
+                                      <td colSpan={2} className="py-2 px-4" style={{ paddingLeft: 40 }}>
+                                        <button
+                                          onClick={() => openAddRpfPostForGroup(first)}
+                                          className="flex items-center gap-1 text-xs font-semibold"
+                                          style={{ color: C.amberDeep }}
+                                        >
+                                          <Plus size={13} /> Link another RPF Post here
+                                        </button>
+                                      </td>
+                                    </tr>
+                                  </tbody>
+                                </table>
+                              </td>
+                            </tr>
+                          )}
+                        </React.Fragment>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+              <TablePagination currentPage={pages.link} totalItems={groupedLinks.length} onPageChange={(p) => handlePageChange(p)} />
+            </>
           )}
           {isEmpty && (
             <div className="py-14 text-center">
               <p className="text-sm mb-3" style={{ color: C.sub }}>
-                {query ? "No entries match your search." : view === "incorrect" ? "Nothing flagged incorrect here." : `No ${TABS.find((t) => t.id === activeTab).plural.toLowerCase()} yet.`}
+                {queries[activeTab] ? "No entries match your search." : view === "incorrect" ? "Nothing flagged incorrect here." : `No ${TABS.find((t) => t.id === activeTab).plural.toLowerCase()} yet.`}
               </p>
-              {!query && view === "active" && (
+              {!queries[activeTab] && view === "active" && (
                 <button onClick={openAdd} className="text-sm font-semibold underline" style={{ color: C.amberDeep }}>Add the first one</button>
               )}
             </div>
