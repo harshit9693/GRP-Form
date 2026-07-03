@@ -414,7 +414,6 @@ export default function GrpMasterConsole() {
   const [confirmAction, setConfirmAction] = useState(null);
   const [toast, setToast] = useState(null);
   const [expandedLinks, setExpandedLinks] = useState(() => new Set());
-  const [selectedLinkIds, setSelectedLinkIds] = useState(() => new Set());
 
   const excelInputRef = useRef(null);
 
@@ -640,54 +639,6 @@ export default function GrpMasterConsole() {
     });
   }
 
-  // A link entry can be bulk-acted-on unless it's already verified-correct in
-  // the Active view (those are locked, same rule as the single-row controls).
-  const isLinkSelectable = (r) => (view === "incorrect" ? true : r.status !== "correct");
-
-  function toggleLinkSelected(id) {
-    setSelectedLinkIds((prev) => {
-      const next = new Set(prev);
-      if (next.has(id)) next.delete(id); else next.add(id);
-      return next;
-    });
-  }
-
-  function toggleGroupSelected(entries) {
-    const eligible = entries.filter(isLinkSelectable);
-    if (!eligible.length) return;
-    const allSelected = eligible.every((e) => selectedLinkIds.has(e.id));
-    setSelectedLinkIds((prev) => {
-      const next = new Set(prev);
-      eligible.forEach((e) => (allSelected ? next.delete(e.id) : next.add(e.id)));
-      return next;
-    });
-  }
-
-  function bulkMarkLinks(status) {
-    const ids = Array.from(selectedLinkIds);
-    if (!ids.length) return;
-    setLinks((prev) => prev.map((r) => (ids.includes(r.id) ? { ...r, status } : r)));
-    setSelectedLinkIds(new Set());
-    showToast(`${ids.length} link${ids.length === 1 ? "" : "s"} ${status === "correct" ? "marked correct." : status === "incorrect" ? "moved to Incorrect." : "restored to pending."}`);
-  }
-
-  function bulkDeleteLinks() {
-    const ids = Array.from(selectedLinkIds);
-    if (!ids.length) return;
-    setConfirmAction({
-      title: "Delete selected links?",
-      message: `This removes ${ids.length} linked RPF post${ids.length === 1 ? "" : "s"} and cannot be undone.`,
-      confirmLabel: "Delete",
-      tone: "danger",
-      onConfirm: () => {
-        setLinks((prev) => prev.filter((r) => !ids.includes(r.id)));
-        setSelectedLinkIds(new Set());
-        setConfirmAction(null);
-        showToast("Selected links deleted.");
-      },
-    });
-  }
-
   // Quick-add: prefill the GRP Station side from an existing group so the
   // person only has to pick Zone / Division / Post for the new RPF link.
   function openAddRpfPostForGroup(first) {
@@ -731,8 +682,6 @@ export default function GrpMasterConsole() {
 
   const counts = { state: states.length, district: districts.length, station: stations.length, link: links.length };
   const isEmpty = activeTab === "link" ? groupedLinks.length === 0 : filtered.length === 0;
-  const allLinksExpanded = groupedLinks.length > 0 && groupedLinks.every((g) => expandedLinks.has(g.key));
-  const selectableLinkCount = groupedLinks.reduce((n, g) => n + g.entries.filter(isLinkSelectable).length, 0);
 
   return (
     <div className="min-h-screen w-full" style={{ background: C.bg, fontFamily: "Inter, sans-serif", color: C.ink }}>
@@ -753,7 +702,7 @@ export default function GrpMasterConsole() {
             {TABS.map((t, i) => (
               <React.Fragment key={t.id}>
                 {i > 0 && <div className="h-px w-8 md:w-14 shrink-0" style={{ background: "#3C557C" }} />}
-                <button onClick={() => { setActiveTab(t.id); setView("active"); setQuery(""); setSelectedLinkIds(new Set()); }} className="flex items-center gap-2 shrink-0 px-1 py-1">
+                <button onClick={() => { setActiveTab(t.id); setView("active"); setQuery(""); }} className="flex items-center gap-2 shrink-0 px-1 py-1">
                   <span className="w-3.5 h-3.5 rounded-full shrink-0" style={{ background: activeTab === t.id ? C.amber : "transparent", border: `2px solid ${activeTab === t.id ? C.amber : "#5B739A"}` }} />
                   <span className="text-sm md:text-base whitespace-nowrap" style={{ fontFamily: "Barlow Semi Condensed, sans-serif", fontWeight: activeTab === t.id ? 700 : 600, color: activeTab === t.id ? "#FFFFFF" : "#93A7C4" }}>{t.label}</span>
                   <span className="text-xs px-1.5 rounded" style={{ background: "rgba(255,255,255,0.1)", color: "#C7D3E3", fontFamily: "IBM Plex Mono, monospace" }}>{counts[t.id]}</span>
@@ -795,10 +744,10 @@ export default function GrpMasterConsole() {
 
         <div className="flex items-center justify-between flex-wrap gap-2">
           <div className="flex gap-2">
-            <button onClick={() => { setView("active"); setSelectedLinkIds(new Set()); }} className="px-3 py-1.5 rounded-full text-xs font-semibold" style={{ background: view === "active" ? C.navy : C.card, color: view === "active" ? "#fff" : C.sub, border: `1px solid ${view === "active" ? C.navy : C.line}` }}>
+            <button onClick={() => setView("active")} className="px-3 py-1.5 rounded-full text-xs font-semibold" style={{ background: view === "active" ? C.navy : C.card, color: view === "active" ? "#fff" : C.sub, border: `1px solid ${view === "active" ? C.navy : C.line}` }}>
               Active ({activeCount})
             </button>
-            <button onClick={() => { setView("incorrect"); setSelectedLinkIds(new Set()); }} className="px-3 py-1.5 rounded-full text-xs font-semibold flex items-center gap-1" style={{ background: view === "incorrect" ? C.danger : C.card, color: view === "incorrect" ? "#fff" : C.sub, border: `1px solid ${view === "incorrect" ? C.danger : C.line}` }}>
+            <button onClick={() => setView("incorrect")} className="px-3 py-1.5 rounded-full text-xs font-semibold flex items-center gap-1" style={{ background: view === "incorrect" ? C.danger : C.card, color: view === "incorrect" ? "#fff" : C.sub, border: `1px solid ${view === "incorrect" ? C.danger : C.line}` }}>
               <XCircle size={13} /> Incorrect ({incorrectCount})
             </button>
           </div>
@@ -839,137 +788,81 @@ export default function GrpMasterConsole() {
             ]} />
           )}
           {activeTab === "link" && (
-            <div>
-              <div className="flex items-center justify-between gap-2 flex-wrap px-4 py-2.5" style={{ borderBottom: `1px solid ${C.line}`, background: C.bg }}>
-                <button
-                  onClick={() => setExpandedLinks(allLinksExpanded ? new Set() : new Set(groupedLinks.map((g) => g.key)))}
-                  disabled={groupedLinks.length === 0}
-                  className="text-xs font-semibold flex items-center gap-1"
-                  style={{ color: groupedLinks.length === 0 ? C.sub : C.navy, opacity: groupedLinks.length === 0 ? 0.5 : 1 }}
-                >
-                  <ChevronRight size={12} style={{ transform: allLinksExpanded ? "rotate(90deg)" : "none", transition: "transform 0.15s ease" }} />
-                  {allLinksExpanded ? "Collapse all" : "Expand all"}
-                </button>
-                {selectedLinkIds.size > 0 && (
-                  <div className="flex items-center gap-2 flex-wrap">
-                    <span className="text-xs font-semibold" style={{ color: C.navy }}>{selectedLinkIds.size} selected</span>
-                    {view === "active" ? (
-                      <>
-                        <button onClick={() => bulkMarkLinks("correct")} className="flex items-center gap-1 px-2.5 py-1 rounded text-xs font-medium" style={{ color: C.success, background: "#E7F3ED" }}>
-                          <CheckCircle2 size={13} /> Mark Correct
-                        </button>
-                        <button onClick={() => bulkMarkLinks("incorrect")} className="flex items-center gap-1 px-2.5 py-1 rounded text-xs font-medium" style={{ color: C.danger, background: "#FBEAE9" }}>
-                          <XCircle size={13} /> Mark Incorrect
-                        </button>
-                      </>
-                    ) : (
-                      <button onClick={() => bulkMarkLinks("pending")} className="flex items-center gap-1 px-2.5 py-1 rounded text-xs font-medium" style={{ color: C.navy, background: "#EAF0F8" }}>
-                        <RotateCcw size={13} /> Restore
-                      </button>
-                    )}
-                    <button onClick={bulkDeleteLinks} className="flex items-center gap-1 px-2.5 py-1 rounded text-xs font-medium" style={{ color: C.danger, background: "#FBEAE9" }}>
-                      <Trash2 size={13} /> Delete
-                    </button>
-                    <button onClick={() => setSelectedLinkIds(new Set())} className="text-xs" style={{ color: C.sub }}>Clear</button>
-                  </div>
-                )}
-              </div>
-              <div className="overflow-x-auto">
-                <table className="w-full text-sm" style={{ borderCollapse: "collapse" }}>
-                  <thead>
-                    <tr style={{ background: C.bg }}>
-                      <th className="text-left px-4 py-3 font-semibold whitespace-nowrap" style={{ color: C.sub, fontSize: 11, textTransform: "uppercase", letterSpacing: 0.5, borderBottom: `1px solid ${C.line}`, width: "1%" }}></th>
-                      <th className="text-left px-4 py-3 font-semibold whitespace-nowrap" style={{ color: C.sub, fontSize: 11, textTransform: "uppercase", letterSpacing: 0.5, borderBottom: `1px solid ${C.line}` }}>GRP Unit</th>
-                      <th className="text-left px-4 py-3 font-semibold whitespace-nowrap" style={{ color: C.sub, fontSize: 11, textTransform: "uppercase", letterSpacing: 0.5, borderBottom: `1px solid ${C.line}` }}>Linked RPF Posts</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {groupedLinks.map(({ key, entries }) => {
-                      const first = entries[0];
-                      const expanded = expandedLinks.has(key);
-                      const label = `${stateName(first.stateCode)} / ${districtName(first.stateCode, first.districtCode)} / ${stationName(first.stateCode, first.districtCode, first.stationCode)}`;
-                      const correctCt = entries.filter((e) => e.status === "correct").length;
-                      const pct = Math.round((correctCt / entries.length) * 100);
-                      const eligible = entries.filter(isLinkSelectable);
-                      const groupChecked = eligible.length > 0 && eligible.every((e) => selectedLinkIds.has(e.id));
-                      return (
-                        <React.Fragment key={key}>
-                          <tr style={{ borderBottom: expanded ? "none" : `1px solid ${C.line}`, background: expanded ? C.bg : "transparent" }}>
-                            <td className="pl-4 py-3 align-top">
-                              {eligible.length > 0 && (
-                                <input
-                                  type="checkbox"
-                                  checked={groupChecked}
-                                  onChange={() => toggleGroupSelected(entries)}
-                                  title="Select all RPF posts in this group"
-                                  style={{ accentColor: C.navy, width: 15, height: 15 }}
-                                />
-                              )}
-                            </td>
-                            <td className="px-4 py-3 align-top">
-                              <button onClick={() => toggleExpandLink(key)} className="flex items-center gap-2 text-left">
-                                <ChevronRight size={14} style={{ transform: expanded ? "rotate(90deg)" : "none", transition: "transform 0.15s ease", color: C.sub, flexShrink: 0 }} />
-                                <span style={{ fontWeight: 600 }}>{label}</span>
-                              </button>
-                            </td>
-                            <td className="px-4 py-3 align-top">
-                              <div className="flex items-center gap-2 justify-end flex-wrap">
-                                <button
-                                  onClick={() => openAddRpfPostForGroup(first)}
-                                  title="Link another RPF Post to this GRP Station"
-                                  className="flex items-center gap-1 px-2 py-1 rounded-full text-xs font-medium"
-                                  style={{ color: C.amberDeep, background: "#FBF3E4" }}
-                                >
-                                  <Plus size={12} /> RPF Post
-                                </button>
-                                <span className="text-xs px-2 py-1 rounded-full" style={{ background: "#EAF0F8", color: C.navy, fontFamily: "IBM Plex Mono, monospace" }}>
-                                  {entries.length} RPF Post{entries.length !== 1 ? "s" : ""}
-                                </span>
-                                {view === "active" && (
-                                  <span className="flex items-center gap-1.5" title={`${correctCt} of ${entries.length} verified`}>
-                                    <span className="rounded-full overflow-hidden" style={{ width: 40, height: 5, background: C.line, display: "inline-block" }}>
-                                      <span style={{ display: "block", height: "100%", width: `${pct}%`, background: pct === 100 ? C.success : C.amber, transition: "width 0.2s ease" }} />
-                                    </span>
-                                    <span className="text-xs font-medium flex items-center gap-1" style={{ color: pct === 100 ? C.success : C.amberDeep }}>
-                                      {pct === 100 ? <Lock size={11} /> : null}{correctCt}/{entries.length}
-                                    </span>
-                                  </span>
-                                )}
-                              </div>
+            <div className="overflow-x-auto">
+              <table className="w-full text-sm" style={{ borderCollapse: "collapse" }}>
+                <thead>
+                  <tr style={{ background: C.bg }}>
+                    <th className="text-left px-4 py-3 font-semibold whitespace-nowrap" style={{ color: C.sub, fontSize: 11, textTransform: "uppercase", letterSpacing: 0.5, borderBottom: `1px solid ${C.line}` }}>GRP Unit</th>
+                    <th className="text-right px-4 py-3 font-semibold whitespace-nowrap" style={{ color: C.sub, fontSize: 11, textTransform: "uppercase", letterSpacing: 0.5, borderBottom: `1px solid ${C.line}` }}>Linked RPF Posts</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {groupedLinks.map(({ key, entries }) => {
+                    const first = entries[0];
+                    const expanded = expandedLinks.has(key);
+                    const label = `${stateName(first.stateCode)} / ${districtName(first.stateCode, first.districtCode)} / ${stationName(first.stateCode, first.districtCode, first.stationCode)}`;
+                    const correctCt = entries.filter((e) => e.status === "correct").length;
+                    return (
+                      <React.Fragment key={key}>
+                        <tr
+                          onClick={() => toggleExpandLink(key)}
+                          className="cursor-pointer"
+                          style={{ borderBottom: expanded ? "none" : `1px solid ${C.line}`, background: expanded ? C.bg : "transparent" }}
+                        >
+                          <td className="px-4 py-3 align-top">
+                            <div className="flex items-center gap-2">
+                              <ChevronRight size={14} style={{ transform: expanded ? "rotate(90deg)" : "none", transition: "transform 0.15s ease", color: C.sub, flexShrink: 0 }} />
+                              <span style={{ fontWeight: 600 }}>{label}</span>
+                            </div>
+                          </td>
+                          <td className="px-4 py-3 align-top text-right">
+                            <span className="text-xs px-2.5 py-1 rounded-full" style={{ background: "#EAF0F8", color: C.navy, fontFamily: "IBM Plex Mono, monospace" }}>
+                              {entries.length} post{entries.length !== 1 ? "s" : ""}{view === "active" ? ` · ${correctCt} verified` : ""}
+                            </span>
+                          </td>
+                        </tr>
+                        {expanded && (
+                          <tr style={{ borderBottom: `1px solid ${C.line}` }}>
+                            <td colSpan={2} className="px-0 py-0">
+                              <table className="w-full text-sm" style={{ borderCollapse: "collapse", background: "#FAF9F5" }}>
+                                <tbody>
+                                  {entries.map((r) => (
+                                    <tr key={r.id} style={{ borderTop: `1px solid ${C.line}` }}>
+                                      <td className="py-2.5 align-top" style={{ paddingLeft: 40, paddingRight: 16, width: "60%" }}>
+                                        <span style={{ color: C.sub }}>{r.zone} / {r.division} / </span><b>{r.post}</b>
+                                      </td>
+                                      <td className="px-4 py-2.5 align-top text-right">
+                                        <RowActions status={r.status} view={view}
+                                          onEdit={() => openEdit(r)}
+                                          onDelete={() => askDelete("link", r, `${stationName(r.stateCode, r.districtCode, r.stationCode)} ↔ ${r.post}`)}
+                                          onMarkCorrect={() => markStatus("link", r, "correct")}
+                                          onMarkIncorrect={() => markStatus("link", r, "incorrect")}
+                                          onRestore={() => markStatus("link", r, "pending")}
+                                          onDeletePermanent={() => askDelete("link", r, `${stationName(r.stateCode, r.districtCode, r.stationCode)} ↔ ${r.post}`)} />
+                                      </td>
+                                    </tr>
+                                  ))}
+                                  <tr style={{ borderTop: `1px solid ${C.line}` }}>
+                                    <td colSpan={2} className="py-2 px-4" style={{ paddingLeft: 40 }}>
+                                      <button
+                                        onClick={() => openAddRpfPostForGroup(first)}
+                                        className="flex items-center gap-1 text-xs font-semibold"
+                                        style={{ color: C.amberDeep }}
+                                      >
+                                        <Plus size={13} /> Link another RPF Post here
+                                      </button>
+                                    </td>
+                                  </tr>
+                                </tbody>
+                              </table>
                             </td>
                           </tr>
-                          {expanded && entries.map((r) => (
-                            <tr key={r.id} style={{ borderBottom: `1px solid ${C.line}`, background: "#FAF9F5" }}>
-                              <td className="pl-4 py-2.5 align-top">
-                                {isLinkSelectable(r) && (
-                                  <input
-                                    type="checkbox"
-                                    checked={selectedLinkIds.has(r.id)}
-                                    onChange={() => toggleLinkSelected(r.id)}
-                                    style={{ accentColor: C.navy, width: 15, height: 15 }}
-                                  />
-                                )}
-                              </td>
-                              <td className="px-4 py-2.5 align-top" style={{ paddingLeft: 24 }} colSpan={1}>
-                                <span style={{ color: C.sub }}>{r.zone} / {r.division} / </span><b>{r.post}</b>
-                              </td>
-                              <td className="px-4 py-2.5 align-top text-right">
-                                <RowActions status={r.status} view={view}
-                                  onEdit={() => openEdit(r)}
-                                  onDelete={() => askDelete("link", r, `${stationName(r.stateCode, r.districtCode, r.stationCode)} ↔ ${r.post}`)}
-                                  onMarkCorrect={() => markStatus("link", r, "correct")}
-                                  onMarkIncorrect={() => markStatus("link", r, "incorrect")}
-                                  onRestore={() => markStatus("link", r, "pending")}
-                                  onDeletePermanent={() => askDelete("link", r, `${stationName(r.stateCode, r.districtCode, r.stationCode)} ↔ ${r.post}`)} />
-                              </td>
-                            </tr>
-                          ))}
-                        </React.Fragment>
-                      );
-                    })}
-                  </tbody>
+                        )}
+                      </React.Fragment>
+                    );
+                  })}
+                </tbody>
               </table>
-              </div>
             </div>
           )}
           {isEmpty && (
