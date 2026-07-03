@@ -2,7 +2,7 @@ import React, { useState, useMemo, useRef } from "react";
 import {
   Plus, Pencil, Trash2, X, Search, ChevronRight, AlertTriangle,
   Check, CheckCircle2, XCircle, RotateCcw, Lock, Upload,
-  ChevronLeft, ChevronsLeft, ChevronsRight
+  ChevronLeft, ChevronsLeft, ChevronsRight, ArrowUp, ArrowDown, ArrowUpDown
 } from "lucide-react";
 import * as XLSX from "xlsx";
 
@@ -481,6 +481,10 @@ export default function GrpMasterConsole() {
     link: 1
   });
 
+  // Sort direction for the GRP–RPF Link table, keyed by number of linked RPF posts.
+  // "none" = insertion order, "desc" = most posts first, "asc" = fewest posts first.
+  const [linkPostSort, setLinkPostSort] = useState("none");
+
   const [modal, setModal] = useState(null); // { mode, data }
   const [error, setError] = useState("");
   const [confirmAction, setConfirmAction] = useState(null);
@@ -532,6 +536,12 @@ export default function GrpMasterConsole() {
 
   function handlePageChange(newPage) {
     setPages(prev => ({ ...prev, [activeTab]: newPage }));
+  }
+
+  // Cycles the "Linked RPF Posts" sort: none -> most posts first -> fewest posts first -> none.
+  function cycleLinkPostSort() {
+    setLinkPostSort((prev) => (prev === "none" ? "desc" : prev === "desc" ? "asc" : "none"));
+    setPages((prev) => ({ ...prev, link: 1 }));
   }
 
   function validate(tab, d) {
@@ -750,6 +760,7 @@ export default function GrpMasterConsole() {
 
   // Links grouped by their GRP Unit (state/district/station), so a station that's
   // mapped to several RPF posts shows as one expandable row instead of N flat rows.
+  // Optionally sorted by number of linked RPF posts via linkPostSort.
   const groupedLinks = useMemo(() => {
     const q = queries.link.trim().toLowerCase();
     const matches = links.filter((r) => {
@@ -764,8 +775,11 @@ export default function GrpMasterConsole() {
       if (!map.has(key)) map.set(key, []);
       map.get(key).push(r);
     });
-    return Array.from(map.entries()).map(([key, entries]) => ({ key, entries }));
-  }, [links, view, queries.link]);
+    let groups = Array.from(map.entries()).map(([key, entries]) => ({ key, entries }));
+    if (linkPostSort === "desc") groups = groups.sort((a, b) => b.entries.length - a.entries.length);
+    else if (linkPostSort === "asc") groups = groups.sort((a, b) => a.entries.length - b.entries.length);
+    return groups;
+  }, [links, view, queries.link, linkPostSort]);
 
   // Paginated grouped links array
   const paginatedGroupedLinks = useMemo(() => {
@@ -776,6 +790,8 @@ export default function GrpMasterConsole() {
 
   const counts = { state: states.length, district: districts.length, station: stations.length, link: links.length };
   const isEmpty = activeTab === "link" ? groupedLinks.length === 0 : filtered.length === 0;
+
+  const LinkSortIcon = linkPostSort === "desc" ? ArrowDown : linkPostSort === "asc" ? ArrowUp : ArrowUpDown;
 
   return (
     <div className="min-h-screen w-full" style={{ background: C.bg, fontFamily: "Inter, sans-serif", color: C.ink }}>
@@ -896,7 +912,16 @@ export default function GrpMasterConsole() {
                   <thead>
                     <tr style={{ background: C.bg }}>
                       <th className="text-left px-4 py-3 font-semibold whitespace-nowrap" style={{ color: C.sub, fontSize: 11, textTransform: "uppercase", letterSpacing: 0.5, borderBottom: `1px solid ${C.line}` }}>GRP Unit</th>
-                      <th className="text-right px-4 py-3 font-semibold whitespace-nowrap" style={{ color: C.sub, fontSize: 11, textTransform: "uppercase", letterSpacing: 0.5, borderBottom: `1px solid ${C.line}` }}>Linked RPF Posts</th>
+                      <th className="text-right px-4 py-3 font-semibold whitespace-nowrap" style={{ color: C.sub, fontSize: 11, textTransform: "uppercase", letterSpacing: 0.5, borderBottom: `1px solid ${C.line}` }}>
+                        <button
+                          onClick={cycleLinkPostSort}
+                          title={linkPostSort === "none" ? "Sort by number of posts" : linkPostSort === "desc" ? "Sorted: most posts first" : "Sorted: fewest posts first"}
+                          className="inline-flex items-center gap-1 uppercase"
+                          style={{ color: linkPostSort === "none" ? C.sub : C.navy, fontSize: 11, letterSpacing: 0.5, fontWeight: 600 }}
+                        >
+                          Linked RPF Posts <LinkSortIcon size={12} />
+                        </button>
+                      </th>
                     </tr>
                   </thead>
                   <tbody>
