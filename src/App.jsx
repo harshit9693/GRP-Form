@@ -1,9 +1,9 @@
-
-import React, { useState, useMemo } from "react";
+import React, { useState, useMemo, useRef } from "react";
 import {
   Plus, Pencil, Trash2, X, Search, ChevronRight, AlertTriangle,
-  Check, CheckCircle2, XCircle, RotateCcw, Lock,
+  Check, CheckCircle2, XCircle, RotateCcw, Lock, Upload,
 } from "lucide-react";
+import * as XLSX from "xlsx";
 
 /* ---------------------------------------------------------------
    SEED DATA
@@ -13,18 +13,24 @@ import {
    propagates everywhere it's used — this is what keeps the four
    tables genuinely interlinked instead of four separate lists.
    Swap the useState initializers for API calls in production.
+
+   IMPORTANT: every "code" field (state code, district code,
+   station code, etc.) is stored and compared as a STRING
+   throughout this file — never coerced to Number — because codes
+   can arrive from manual entry or Excel import with leading zeros
+   or mixed formats, and coercion would silently corrupt them.
 ----------------------------------------------------------------*/
 
 const STATE_TUPLES = [];
 const RAW_STATES = STATE_TUPLES.map(([code, name, strCode, address]) => ({
-  code, name, strCode, address: address || name,
+  code: String(code), name, strCode, address: address || name,
   status: name === "Test State" ? "pending" : "correct",
 }));
 const stateCodeByName = Object.fromEntries(RAW_STATES.map((s) => [s.name, s.code]));
 
 const DISTRICT_TUPLES = [];
 const RAW_DISTRICTS = DISTRICT_TUPLES.map(([stateName, code, name, strCode, address]) => ({
-  stateCode: stateCodeByName[stateName], code, name, strCode: strCode || "", address: address || name,
+  stateCode: stateCodeByName[stateName], code: String(code), name, strCode: strCode || "", address: address || name,
   shiftType: "", status: stateName === "Test State" ? "pending" : "correct",
 }));
 const districtKey = (stateCode, name) => `${stateCode}::${name}`;
@@ -35,7 +41,7 @@ const RAW_STATIONS = STATION_TUPLES.map(([stateName, districtName, code, name, s
   const stateCode = stateCodeByName[stateName];
   const districtCode = districtCodeByKey[districtKey(stateCode, districtName)];
   return {
-    stateCode, districtCode, code, name, strCode, address: address || name,
+    stateCode, districtCode, code: String(code), name, strCode, address: address || name,
     status: stateName === "Test State" ? "pending" : "correct",
   };
 });
@@ -84,6 +90,29 @@ const TABS = [
   { id: "station", label: "GRP Station", plural: "GRP Stations" },
   { id: "link", label: "GRP–RPF Link", plural: "Links" },
 ];
+
+// Expected column layout per tab (row 1 = report title, row 2 = header, data from row 3).
+const EXCEL_COLUMNS = {
+  state: ["State Code", "State Name", "State Str Code", "Location Address"],
+  district: ["State Name", "District Code", "District Name", "District Str Code", "Location Address"],
+  station: ["State Name", "District Name", "Station Code", "Station Name", "Station Str Code", "Location Address"],
+  link: ["Sno", "GRP Unit (State/District/Station)", "RPF Unit (Zone/Division/Post)"],
+};
+
+/* ------------------------------ FILE PARSING -----------------------------*/
+// Reads an .xlsx / .xls workbook (via SheetJS) and returns a plain
+// array-of-string-arrays — the sheet exactly as it appears, every cell
+// coerced to a string so codes with leading zeros etc. survive intact.
+async function readExcelFile(file) {
+  const workbook = XLSX.read(await file.arrayBuffer(), { type: "array" });
+  const sheet = workbook.Sheets[workbook.SheetNames[0]];
+  const rows = XLSX.utils.sheet_to_json(sheet, { header: 1, raw: false, defval: "" });
+  return rows
+    .map((r) => r.map((c) => String(c ?? "").trim()))
+    .filter((r) => r.some((c) => c !== ""));
+}
+
+const normalizeName = (s) => String(s || "").trim().toLowerCase();
 
 /* ------------------------------ SMALL UI -------------------------------*/
 function Field({ label, children, required }) {
@@ -173,7 +202,7 @@ function DistrictForm({ data, set, mode, states }) {
   return (
     <>
       <Field label="State Name" required>
-        <Select value={data.stateCode} disabled={mode === "edit"} onChange={(v) => set("stateCode", v === "" ? "" : Number(v))} options={stateOptions} />
+        <Select value={data.stateCode} disabled={mode === "edit"} onChange={(v) => set("stateCode", v)} options={stateOptions} />
         {mode === "add" && stateOptions.length === 0 && (
           <span className="block text-xs mt-1" style={{ color: C.danger }}>No verified states yet — mark a state Correct on the State tab first.</span>
         )}
@@ -208,10 +237,10 @@ function StationForm({ data, set, mode, states, districts }) {
   return (
     <>
       <Field label="State Name" required>
-        <Select value={data.stateCode} disabled={mode === "edit"} onChange={(v) => set("stateCode", v === "" ? "" : Number(v))} options={stateOptions} />
+        <Select value={data.stateCode} disabled={mode === "edit"} onChange={(v) => set("stateCode", v)} options={stateOptions} />
       </Field>
       <Field label="District" required>
-        <Select value={data.districtCode} disabled={mode === "edit" || !data.stateCode} onChange={(v) => set("districtCode", v === "" ? "" : Number(v))} options={districtOptions} />
+        <Select value={data.districtCode} disabled={mode === "edit" || !data.stateCode} onChange={(v) => set("districtCode", v)} options={districtOptions} />
         {mode === "add" && data.stateCode && districtOptions.length === 0 && (
           <span className="block text-xs mt-1" style={{ color: C.danger }}>No verified districts for this state yet — verify one on the District tab first.</span>
         )}
@@ -253,14 +282,14 @@ function LinkForm({ data, set, states, districts, stations }) {
       <div className="text-xs font-semibold uppercase tracking-wide mb-2" style={{ color: C.amberDeep, fontFamily: "Barlow Semi Condensed, sans-serif" }}>GRP Station</div>
       <div className="grid grid-cols-2 gap-x-4">
         <Field label="State" required>
-          <Select value={data.stateCode} onChange={(v) => { set("stateCode", v === "" ? "" : Number(v)); set("districtCode", ""); set("stationCode", ""); }} options={stateOptions} />
+          <Select value={data.stateCode} onChange={(v) => { set("stateCode", v); set("districtCode", ""); set("stationCode", ""); }} options={stateOptions} />
         </Field>
         <Field label="District" required>
-          <Select value={data.districtCode} onChange={(v) => { set("districtCode", v === "" ? "" : Number(v)); set("stationCode", ""); }} options={districtOptions} disabled={!data.stateCode} />
+          <Select value={data.districtCode} onChange={(v) => { set("districtCode", v); set("stationCode", ""); }} options={districtOptions} disabled={!data.stateCode} />
         </Field>
       </div>
       <Field label="Station" required>
-        <Select value={data.stationCode} onChange={(v) => set("stationCode", v === "" ? "" : Number(v))} options={stationOptions} disabled={!data.districtCode} />
+        <Select value={data.stationCode} onChange={(v) => set("stationCode", v)} options={stationOptions} disabled={!data.districtCode} />
         {data.districtCode && stationOptions.length === 0 && (
           <span className="block text-xs mt-1" style={{ color: C.danger }}>No verified GRP stations for this district yet — verify one on the GRP Station tab first.</span>
         )}
@@ -384,8 +413,12 @@ export default function GrpMasterConsole() {
   const [error, setError] = useState("");
   const [confirmAction, setConfirmAction] = useState(null);
   const [toast, setToast] = useState(null);
+  const [expandedLinks, setExpandedLinks] = useState(() => new Set());
+  const [selectedLinkIds, setSelectedLinkIds] = useState(() => new Set());
 
-  const showToast = (msg) => { setToast(msg); setTimeout(() => setToast(null), 2200); };
+  const excelInputRef = useRef(null);
+
+  const showToast = (msg) => { setToast(msg); setTimeout(() => setToast(null), 2600); };
 
   // ---- lookups so a rename anywhere propagates instantly ----
   const stateName = (code) => states.find((s) => s.code === code)?.name || "";
@@ -393,9 +426,9 @@ export default function GrpMasterConsole() {
   const stationName = (stateCode, districtCode, code) => stations.find((s) => s.stateCode === stateCode && s.districtCode === districtCode && s.code === code)?.name || "";
 
   const nextDistrictCode = (stateCode) =>
-    Math.max(9, ...districts.filter((d) => d.stateCode === stateCode).map((d) => Number(d.code))) + 1;
+    String(Math.max(9, ...districts.filter((d) => d.stateCode === stateCode).map((d) => Number(d.code) || 0)) + 1);
   const nextStationCode = (stateCode, districtCode) =>
-    Math.max(9, ...stations.filter((s) => s.stateCode === stateCode && s.districtCode === districtCode).map((s) => Number(s.code))) + 1;
+    String(Math.max(9, ...stations.filter((s) => s.stateCode === stateCode && s.districtCode === districtCode).map((s) => Number(s.code) || 0)) + 1);
 
   const emptyData = {
     state: { code: "", name: "", strCode: "", address: "" },
@@ -424,7 +457,8 @@ export default function GrpMasterConsole() {
   function validate(tab, d) {
     if (tab === "state") {
       if (!d.code || !d.name || !d.strCode || !d.address) return "Please fill in all fields.";
-      const dupe = states.some((s) => s.code === Number(d.code) && !(modal.mode === "edit" && modal.data.code === Number(d.code)));
+      const codeStr = String(d.code).trim();
+      const dupe = states.some((s) => String(s.code) === codeStr && !(modal.mode === "edit" && String(modal.data.code) === codeStr));
       if (dupe) return `State code ${d.code} already exists.`;
     }
     if (tab === "district") {
@@ -445,7 +479,7 @@ export default function GrpMasterConsole() {
     const { mode, data } = modal;
     const err = validate(activeTab, data);
     if (err) { setError(err); return; }
-    const payload = { ...data, code: data.code !== "" ? Number(data.code) : data.code };
+    const payload = { ...data, code: data.code !== "" && data.code !== undefined ? String(data.code) : data.code };
 
     if (activeTab === "state") {
       setStates((prev) => mode === "add" ? [{ ...payload, status: "pending" }, ...prev] : prev.map((s) => (s.code === payload.code ? { ...s, ...payload } : s)));
@@ -492,6 +526,179 @@ export default function GrpMasterConsole() {
     setConfirmAction({ title: "Delete entry?", message: `This removes ${label} and cannot be undone.`, confirmLabel: "Delete", tone: "danger", onConfirm: () => performDelete(tab, row) });
   }
 
+  // ---- Excel import ----
+  function triggerExcelImport() {
+    if (excelInputRef.current) excelInputRef.current.click();
+  }
+
+  async function handleExcelFile(e) {
+    const file = e.target.files?.[0];
+    const tab = activeTab;
+    e.target.value = ""; // allow re-selecting the same file later
+    if (!file) return;
+    try {
+      const rows = await readExcelFile(file);
+      // Row 1: "Railway Security Response System" title, Row 2: column headers, data from Row 3.
+      const dataRows = rows.slice(2);
+      importForTab(tab, dataRows);
+    } catch (err) {
+      showToast("Couldn't read that file — please upload a valid Excel (.xlsx / .xls) export.");
+    }
+  }
+
+  function importForTab(tab, dataRows) {
+    let added = 0, skipped = 0;
+
+    if (tab === "state") {
+      const newOnes = [];
+      dataRows.forEach((cols) => {
+        const code = String(cols[0] ?? "").trim();
+        const name = String(cols[1] ?? "").trim();
+        const strCode = String(cols[2] ?? "").trim();
+        const address = String(cols[3] ?? "").trim();
+        if (!code || !name) { skipped++; return; }
+        const dup = states.some((s) => s.code === code) || newOnes.some((s) => s.code === code);
+        if (dup) { skipped++; return; }
+        newOnes.push({ code, name, strCode, address: address || name, status: "pending" });
+        added++;
+      });
+      if (newOnes.length) setStates((prev) => [...newOnes, ...prev]);
+    }
+
+    else if (tab === "district") {
+      const newOnes = [];
+      dataRows.forEach((cols) => {
+        const sName = String(cols[0] ?? "").trim();
+        const code = String(cols[1] ?? "").trim();
+        const name = String(cols[2] ?? "").trim();
+        const strCode = String(cols[3] ?? "").trim();
+        const address = String(cols[4] ?? "").trim();
+        const st = states.find((s) => normalizeName(s.name) === normalizeName(sName));
+        if (!st || !code || !name) { skipped++; return; }
+        const dup = districts.some((d) => d.stateCode === st.code && d.code === code) || newOnes.some((d) => d.stateCode === st.code && d.code === code);
+        if (dup) { skipped++; return; }
+        newOnes.push({ stateCode: st.code, code, name, strCode, address: address || name, shiftType: "", status: "pending" });
+        added++;
+      });
+      if (newOnes.length) setDistricts((prev) => [...newOnes, ...prev]);
+    }
+
+    else if (tab === "station") {
+      const newOnes = [];
+      dataRows.forEach((cols) => {
+        const sName = String(cols[0] ?? "").trim();
+        const dName = String(cols[1] ?? "").trim();
+        const code = String(cols[2] ?? "").trim();
+        const name = String(cols[3] ?? "").trim();
+        const strCode = String(cols[4] ?? "").trim();
+        const address = String(cols[5] ?? "").trim();
+        const st = states.find((s) => normalizeName(s.name) === normalizeName(sName));
+        const dist = st && districts.find((d) => d.stateCode === st.code && normalizeName(d.name) === normalizeName(dName));
+        if (!st || !dist || !code || !name) { skipped++; return; }
+        const dup = stations.some((s) => s.stateCode === st.code && s.districtCode === dist.code && s.code === code)
+          || newOnes.some((s) => s.stateCode === st.code && s.districtCode === dist.code && s.code === code);
+        if (dup) { skipped++; return; }
+        newOnes.push({ stateCode: st.code, districtCode: dist.code, code, name, strCode, address: address || name, status: "pending" });
+        added++;
+      });
+      if (newOnes.length) setStations((prev) => [...newOnes, ...prev]);
+    }
+
+    else if (tab === "link") {
+      const newOnes = [];
+      let nextId = Math.max(0, ...links.map((l) => l.id), ...newOnes.map((l) => l.id || 0));
+      dataRows.forEach((cols) => {
+        const grpUnit = String(cols[1] ?? "").trim();
+        const rpfUnit = String(cols[2] ?? "").trim();
+        const grpParts = grpUnit.split("/").map((p) => p.trim());
+        const rpfParts = rpfUnit.split("/").map((p) => p.trim());
+        if (grpParts.length < 3 || rpfParts.length < 3) { skipped++; return; }
+        const [sName, dName, stName] = grpParts;
+        const [zone, division, post] = rpfParts;
+        const st = states.find((s) => normalizeName(s.name) === normalizeName(sName));
+        const dist = st && districts.find((d) => d.stateCode === st.code && normalizeName(d.name) === normalizeName(dName));
+        const stn = dist && stations.find((s) => s.stateCode === st.code && s.districtCode === dist.code && normalizeName(s.name) === normalizeName(stName));
+        if (!st || !dist || !stn || !zone || !division || !post) { skipped++; return; }
+        const dup = links.some((l) => l.stateCode === st.code && l.districtCode === dist.code && l.stationCode === stn.code && l.zone === zone && l.division === division && l.post === post)
+          || newOnes.some((l) => l.stateCode === st.code && l.districtCode === dist.code && l.stationCode === stn.code && l.zone === zone && l.division === division && l.post === post);
+        if (dup) { skipped++; return; }
+        nextId += 1;
+        newOnes.push({ id: nextId, stateCode: st.code, districtCode: dist.code, stationCode: stn.code, zone, division, post, status: "pending" });
+        added++;
+      });
+      if (newOnes.length) setLinks((prev) => [...newOnes, ...prev]);
+    }
+
+    showToast(`Imported ${added} ${added === 1 ? "entry" : "entries"}${skipped ? `, skipped ${skipped} (duplicate or unmatched)` : ""}.`);
+  }
+
+  function toggleExpandLink(key) {
+    setExpandedLinks((prev) => {
+      const next = new Set(prev);
+      if (next.has(key)) next.delete(key); else next.add(key);
+      return next;
+    });
+  }
+
+  // A link entry can be bulk-acted-on unless it's already verified-correct in
+  // the Active view (those are locked, same rule as the single-row controls).
+  const isLinkSelectable = (r) => (view === "incorrect" ? true : r.status !== "correct");
+
+  function toggleLinkSelected(id) {
+    setSelectedLinkIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id); else next.add(id);
+      return next;
+    });
+  }
+
+  function toggleGroupSelected(entries) {
+    const eligible = entries.filter(isLinkSelectable);
+    if (!eligible.length) return;
+    const allSelected = eligible.every((e) => selectedLinkIds.has(e.id));
+    setSelectedLinkIds((prev) => {
+      const next = new Set(prev);
+      eligible.forEach((e) => (allSelected ? next.delete(e.id) : next.add(e.id)));
+      return next;
+    });
+  }
+
+  function bulkMarkLinks(status) {
+    const ids = Array.from(selectedLinkIds);
+    if (!ids.length) return;
+    setLinks((prev) => prev.map((r) => (ids.includes(r.id) ? { ...r, status } : r)));
+    setSelectedLinkIds(new Set());
+    showToast(`${ids.length} link${ids.length === 1 ? "" : "s"} ${status === "correct" ? "marked correct." : status === "incorrect" ? "moved to Incorrect." : "restored to pending."}`);
+  }
+
+  function bulkDeleteLinks() {
+    const ids = Array.from(selectedLinkIds);
+    if (!ids.length) return;
+    setConfirmAction({
+      title: "Delete selected links?",
+      message: `This removes ${ids.length} linked RPF post${ids.length === 1 ? "" : "s"} and cannot be undone.`,
+      confirmLabel: "Delete",
+      tone: "danger",
+      onConfirm: () => {
+        setLinks((prev) => prev.filter((r) => !ids.includes(r.id)));
+        setSelectedLinkIds(new Set());
+        setConfirmAction(null);
+        showToast("Selected links deleted.");
+      },
+    });
+  }
+
+  // Quick-add: prefill the GRP Station side from an existing group so the
+  // person only has to pick Zone / Division / Post for the new RPF link.
+  function openAddRpfPostForGroup(first) {
+    setError("");
+    setExpandedLinks((prev) => new Set(prev).add(`${first.stateCode}::${first.districtCode}::${first.stationCode}`));
+    setModal({
+      mode: "add",
+      data: { stateCode: first.stateCode, districtCode: first.districtCode, stationCode: first.stationCode, zone: "", division: "", post: "" },
+    });
+  }
+
   const rowsForTab = { state: states, district: districts, station: stations, link: links }[activeTab];
   const activeCount = rowsForTab.filter((r) => r.status !== "incorrect").length;
   const incorrectCount = rowsForTab.filter((r) => r.status === "incorrect").length;
@@ -503,7 +710,29 @@ export default function GrpMasterConsole() {
     return byView.filter((r) => Object.values(r).some((v) => String(v).toLowerCase().includes(q)));
   }, [rowsForTab, view, query]);
 
+  // Links grouped by their GRP Unit (state/district/station), so a station that's
+  // mapped to several RPF posts shows as one expandable row instead of N flat rows.
+  const groupedLinks = useMemo(() => {
+    const q = query.trim().toLowerCase();
+    const matches = links.filter((r) => {
+      const inView = view === "incorrect" ? r.status === "incorrect" : r.status !== "incorrect";
+      if (!inView) return false;
+      if (!q) return true;
+      return Object.values(r).some((v) => String(v).toLowerCase().includes(q));
+    });
+    const map = new Map();
+    matches.forEach((r) => {
+      const key = `${r.stateCode}::${r.districtCode}::${r.stationCode}`;
+      if (!map.has(key)) map.set(key, []);
+      map.get(key).push(r);
+    });
+    return Array.from(map.entries()).map(([key, entries]) => ({ key, entries }));
+  }, [links, view, query]);
+
   const counts = { state: states.length, district: districts.length, station: stations.length, link: links.length };
+  const isEmpty = activeTab === "link" ? groupedLinks.length === 0 : filtered.length === 0;
+  const allLinksExpanded = groupedLinks.length > 0 && groupedLinks.every((g) => expandedLinks.has(g.key));
+  const selectableLinkCount = groupedLinks.reduce((n, g) => n + g.entries.filter(isLinkSelectable).length, 0);
 
   return (
     <div className="min-h-screen w-full" style={{ background: C.bg, fontFamily: "Inter, sans-serif", color: C.ink }}>
@@ -524,7 +753,7 @@ export default function GrpMasterConsole() {
             {TABS.map((t, i) => (
               <React.Fragment key={t.id}>
                 {i > 0 && <div className="h-px w-8 md:w-14 shrink-0" style={{ background: "#3C557C" }} />}
-                <button onClick={() => { setActiveTab(t.id); setView("active"); setQuery(""); }} className="flex items-center gap-2 shrink-0 px-1 py-1">
+                <button onClick={() => { setActiveTab(t.id); setView("active"); setQuery(""); setSelectedLinkIds(new Set()); }} className="flex items-center gap-2 shrink-0 px-1 py-1">
                   <span className="w-3.5 h-3.5 rounded-full shrink-0" style={{ background: activeTab === t.id ? C.amber : "transparent", border: `2px solid ${activeTab === t.id ? C.amber : "#5B739A"}` }} />
                   <span className="text-sm md:text-base whitespace-nowrap" style={{ fontFamily: "Barlow Semi Condensed, sans-serif", fontWeight: activeTab === t.id ? 700 : 600, color: activeTab === t.id ? "#FFFFFF" : "#93A7C4" }}>{t.label}</span>
                   <span className="text-xs px-1.5 rounded" style={{ background: "rgba(255,255,255,0.1)", color: "#C7D3E3", fontFamily: "IBM Plex Mono, monospace" }}>{counts[t.id]}</span>
@@ -542,18 +771,40 @@ export default function GrpMasterConsole() {
             <Search size={16} className="absolute left-3 top-1/2 -translate-y-1/2" style={{ color: C.sub }} />
             <input value={query} onChange={(e) => setQuery(e.target.value)} placeholder={`Search ${TABS.find((t) => t.id === activeTab).plural.toLowerCase()}…`} className="w-full rounded-md border pl-9 pr-3 py-2 text-sm focus:outline-none" style={{ borderColor: C.line, background: C.card }} />
           </div>
-          <button onClick={openAdd} className="flex items-center justify-center gap-1.5 px-4 py-2 rounded-md text-white text-sm font-semibold shrink-0" style={{ background: C.amberDeep }}>
-            <Plus size={16} /> Add New {TABS.find((t) => t.id === activeTab).label}
-          </button>
+          <div className="flex gap-2 shrink-0">
+            <input
+              ref={excelInputRef}
+              type="file"
+              accept=".xlsx,.xls,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.ms-excel"
+              className="hidden"
+              onChange={handleExcelFile}
+            />
+            <button
+              onClick={triggerExcelImport}
+              title={`Expected columns: ${EXCEL_COLUMNS[activeTab].join(", ")} (row 1 = report title, row 2 = headers, data from row 3). Accepts .xlsx or .xls.`}
+              className="flex items-center justify-center gap-1.5 px-4 py-2 rounded-md text-sm font-semibold"
+              style={{ background: C.card, color: C.navy, border: `1px solid ${C.line}` }}
+            >
+              <Upload size={16} /> Import Excel
+            </button>
+            <button onClick={openAdd} className="flex items-center justify-center gap-1.5 px-4 py-2 rounded-md text-white text-sm font-semibold" style={{ background: C.amberDeep }}>
+              <Plus size={16} /> Add New {TABS.find((t) => t.id === activeTab).label}
+            </button>
+          </div>
         </div>
 
-        <div className="flex gap-2">
-          <button onClick={() => setView("active")} className="px-3 py-1.5 rounded-full text-xs font-semibold" style={{ background: view === "active" ? C.navy : C.card, color: view === "active" ? "#fff" : C.sub, border: `1px solid ${view === "active" ? C.navy : C.line}` }}>
-            Active ({activeCount})
-          </button>
-          <button onClick={() => setView("incorrect")} className="px-3 py-1.5 rounded-full text-xs font-semibold flex items-center gap-1" style={{ background: view === "incorrect" ? C.danger : C.card, color: view === "incorrect" ? "#fff" : C.sub, border: `1px solid ${view === "incorrect" ? C.danger : C.line}` }}>
-            <XCircle size={13} /> Incorrect ({incorrectCount})
-          </button>
+        <div className="flex items-center justify-between flex-wrap gap-2">
+          <div className="flex gap-2">
+            <button onClick={() => { setView("active"); setSelectedLinkIds(new Set()); }} className="px-3 py-1.5 rounded-full text-xs font-semibold" style={{ background: view === "active" ? C.navy : C.card, color: view === "active" ? "#fff" : C.sub, border: `1px solid ${view === "active" ? C.navy : C.line}` }}>
+              Active ({activeCount})
+            </button>
+            <button onClick={() => { setView("incorrect"); setSelectedLinkIds(new Set()); }} className="px-3 py-1.5 rounded-full text-xs font-semibold flex items-center gap-1" style={{ background: view === "incorrect" ? C.danger : C.card, color: view === "incorrect" ? "#fff" : C.sub, border: `1px solid ${view === "incorrect" ? C.danger : C.line}` }}>
+              <XCircle size={13} /> Incorrect ({incorrectCount})
+            </button>
+          </div>
+          <span className="text-xs" style={{ color: C.sub, fontFamily: "IBM Plex Mono, monospace" }}>
+            Excel columns: {EXCEL_COLUMNS[activeTab].join(" · ")}
+          </span>
         </div>
       </div>
 
@@ -588,17 +839,140 @@ export default function GrpMasterConsole() {
             ]} />
           )}
           {activeTab === "link" && (
-            <Table cols={["#", "GRP Unit", "RPF Unit", "Verification"]} rows={filtered} renderRow={(r, i) => [
-              <Mono>{i + 1}</Mono>,
-              <span>{stateName(r.stateCode)}<span style={{ color: C.sub }}>/</span>{districtName(r.stateCode, r.districtCode)}<span style={{ color: C.sub }}>/</span><b>{stationName(r.stateCode, r.districtCode, r.stationCode)}</b></span>,
-              <span>{r.zone}<span style={{ color: C.sub }}>/</span>{r.division}<span style={{ color: C.sub }}>/</span><b>{r.post}</b></span>,
-              <RowActions status={r.status} view={view}
-                onEdit={() => openEdit(r)} onDelete={() => askDelete("link", r, `${stationName(r.stateCode, r.districtCode, r.stationCode)} ↔ ${r.post}`)}
-                onMarkCorrect={() => markStatus("link", r, "correct")} onMarkIncorrect={() => markStatus("link", r, "incorrect")}
-                onRestore={() => markStatus("link", r, "pending")} onDeletePermanent={() => askDelete("link", r, `${stationName(r.stateCode, r.districtCode, r.stationCode)} ↔ ${r.post}`)} />,
-            ]} />
+            <div>
+              <div className="flex items-center justify-between gap-2 flex-wrap px-4 py-2.5" style={{ borderBottom: `1px solid ${C.line}`, background: C.bg }}>
+                <button
+                  onClick={() => setExpandedLinks(allLinksExpanded ? new Set() : new Set(groupedLinks.map((g) => g.key)))}
+                  disabled={groupedLinks.length === 0}
+                  className="text-xs font-semibold flex items-center gap-1"
+                  style={{ color: groupedLinks.length === 0 ? C.sub : C.navy, opacity: groupedLinks.length === 0 ? 0.5 : 1 }}
+                >
+                  <ChevronRight size={12} style={{ transform: allLinksExpanded ? "rotate(90deg)" : "none", transition: "transform 0.15s ease" }} />
+                  {allLinksExpanded ? "Collapse all" : "Expand all"}
+                </button>
+                {selectedLinkIds.size > 0 && (
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <span className="text-xs font-semibold" style={{ color: C.navy }}>{selectedLinkIds.size} selected</span>
+                    {view === "active" ? (
+                      <>
+                        <button onClick={() => bulkMarkLinks("correct")} className="flex items-center gap-1 px-2.5 py-1 rounded text-xs font-medium" style={{ color: C.success, background: "#E7F3ED" }}>
+                          <CheckCircle2 size={13} /> Mark Correct
+                        </button>
+                        <button onClick={() => bulkMarkLinks("incorrect")} className="flex items-center gap-1 px-2.5 py-1 rounded text-xs font-medium" style={{ color: C.danger, background: "#FBEAE9" }}>
+                          <XCircle size={13} /> Mark Incorrect
+                        </button>
+                      </>
+                    ) : (
+                      <button onClick={() => bulkMarkLinks("pending")} className="flex items-center gap-1 px-2.5 py-1 rounded text-xs font-medium" style={{ color: C.navy, background: "#EAF0F8" }}>
+                        <RotateCcw size={13} /> Restore
+                      </button>
+                    )}
+                    <button onClick={bulkDeleteLinks} className="flex items-center gap-1 px-2.5 py-1 rounded text-xs font-medium" style={{ color: C.danger, background: "#FBEAE9" }}>
+                      <Trash2 size={13} /> Delete
+                    </button>
+                    <button onClick={() => setSelectedLinkIds(new Set())} className="text-xs" style={{ color: C.sub }}>Clear</button>
+                  </div>
+                )}
+              </div>
+              <div className="overflow-x-auto">
+                <table className="w-full text-sm" style={{ borderCollapse: "collapse" }}>
+                  <thead>
+                    <tr style={{ background: C.bg }}>
+                      <th className="text-left px-4 py-3 font-semibold whitespace-nowrap" style={{ color: C.sub, fontSize: 11, textTransform: "uppercase", letterSpacing: 0.5, borderBottom: `1px solid ${C.line}`, width: "1%" }}></th>
+                      <th className="text-left px-4 py-3 font-semibold whitespace-nowrap" style={{ color: C.sub, fontSize: 11, textTransform: "uppercase", letterSpacing: 0.5, borderBottom: `1px solid ${C.line}` }}>GRP Unit</th>
+                      <th className="text-left px-4 py-3 font-semibold whitespace-nowrap" style={{ color: C.sub, fontSize: 11, textTransform: "uppercase", letterSpacing: 0.5, borderBottom: `1px solid ${C.line}` }}>Linked RPF Posts</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {groupedLinks.map(({ key, entries }) => {
+                      const first = entries[0];
+                      const expanded = expandedLinks.has(key);
+                      const label = `${stateName(first.stateCode)} / ${districtName(first.stateCode, first.districtCode)} / ${stationName(first.stateCode, first.districtCode, first.stationCode)}`;
+                      const correctCt = entries.filter((e) => e.status === "correct").length;
+                      const pct = Math.round((correctCt / entries.length) * 100);
+                      const eligible = entries.filter(isLinkSelectable);
+                      const groupChecked = eligible.length > 0 && eligible.every((e) => selectedLinkIds.has(e.id));
+                      return (
+                        <React.Fragment key={key}>
+                          <tr style={{ borderBottom: expanded ? "none" : `1px solid ${C.line}`, background: expanded ? C.bg : "transparent" }}>
+                            <td className="pl-4 py-3 align-top">
+                              {eligible.length > 0 && (
+                                <input
+                                  type="checkbox"
+                                  checked={groupChecked}
+                                  onChange={() => toggleGroupSelected(entries)}
+                                  title="Select all RPF posts in this group"
+                                  style={{ accentColor: C.navy, width: 15, height: 15 }}
+                                />
+                              )}
+                            </td>
+                            <td className="px-4 py-3 align-top">
+                              <button onClick={() => toggleExpandLink(key)} className="flex items-center gap-2 text-left">
+                                <ChevronRight size={14} style={{ transform: expanded ? "rotate(90deg)" : "none", transition: "transform 0.15s ease", color: C.sub, flexShrink: 0 }} />
+                                <span style={{ fontWeight: 600 }}>{label}</span>
+                              </button>
+                            </td>
+                            <td className="px-4 py-3 align-top">
+                              <div className="flex items-center gap-2 justify-end flex-wrap">
+                                <button
+                                  onClick={() => openAddRpfPostForGroup(first)}
+                                  title="Link another RPF Post to this GRP Station"
+                                  className="flex items-center gap-1 px-2 py-1 rounded-full text-xs font-medium"
+                                  style={{ color: C.amberDeep, background: "#FBF3E4" }}
+                                >
+                                  <Plus size={12} /> RPF Post
+                                </button>
+                                <span className="text-xs px-2 py-1 rounded-full" style={{ background: "#EAF0F8", color: C.navy, fontFamily: "IBM Plex Mono, monospace" }}>
+                                  {entries.length} RPF Post{entries.length !== 1 ? "s" : ""}
+                                </span>
+                                {view === "active" && (
+                                  <span className="flex items-center gap-1.5" title={`${correctCt} of ${entries.length} verified`}>
+                                    <span className="rounded-full overflow-hidden" style={{ width: 40, height: 5, background: C.line, display: "inline-block" }}>
+                                      <span style={{ display: "block", height: "100%", width: `${pct}%`, background: pct === 100 ? C.success : C.amber, transition: "width 0.2s ease" }} />
+                                    </span>
+                                    <span className="text-xs font-medium flex items-center gap-1" style={{ color: pct === 100 ? C.success : C.amberDeep }}>
+                                      {pct === 100 ? <Lock size={11} /> : null}{correctCt}/{entries.length}
+                                    </span>
+                                  </span>
+                                )}
+                              </div>
+                            </td>
+                          </tr>
+                          {expanded && entries.map((r) => (
+                            <tr key={r.id} style={{ borderBottom: `1px solid ${C.line}`, background: "#FAF9F5" }}>
+                              <td className="pl-4 py-2.5 align-top">
+                                {isLinkSelectable(r) && (
+                                  <input
+                                    type="checkbox"
+                                    checked={selectedLinkIds.has(r.id)}
+                                    onChange={() => toggleLinkSelected(r.id)}
+                                    style={{ accentColor: C.navy, width: 15, height: 15 }}
+                                  />
+                                )}
+                              </td>
+                              <td className="px-4 py-2.5 align-top" style={{ paddingLeft: 24 }} colSpan={1}>
+                                <span style={{ color: C.sub }}>{r.zone} / {r.division} / </span><b>{r.post}</b>
+                              </td>
+                              <td className="px-4 py-2.5 align-top text-right">
+                                <RowActions status={r.status} view={view}
+                                  onEdit={() => openEdit(r)}
+                                  onDelete={() => askDelete("link", r, `${stationName(r.stateCode, r.districtCode, r.stationCode)} ↔ ${r.post}`)}
+                                  onMarkCorrect={() => markStatus("link", r, "correct")}
+                                  onMarkIncorrect={() => markStatus("link", r, "incorrect")}
+                                  onRestore={() => markStatus("link", r, "pending")}
+                                  onDeletePermanent={() => askDelete("link", r, `${stationName(r.stateCode, r.districtCode, r.stationCode)} ↔ ${r.post}`)} />
+                              </td>
+                            </tr>
+                          ))}
+                        </React.Fragment>
+                      );
+                    })}
+                  </tbody>
+              </table>
+              </div>
+            </div>
           )}
-          {filtered.length === 0 && (
+          {isEmpty && (
             <div className="py-14 text-center">
               <p className="text-sm mb-3" style={{ color: C.sub }}>
                 {query ? "No entries match your search." : view === "incorrect" ? "Nothing flagged incorrect here." : `No ${TABS.find((t) => t.id === activeTab).plural.toLowerCase()} yet.`}
