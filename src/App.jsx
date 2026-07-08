@@ -481,9 +481,14 @@ export default function GrpMasterConsole() {
     link: 1
   });
 
-  // Sort direction for the GRP–RPF Link table, keyed by number of linked RPF posts.
-  // "none" = insertion order, "desc" = most posts first, "asc" = fewest posts first.
+  // Sort direction for the GRP–RPF Link table, keyed by number of linked rows in each group.
+  // "none" = insertion order, "desc" = most first, "asc" = fewest first.
   const [linkPostSort, setLinkPostSort] = useState("none");
+
+  // Which side of the many-to-many relationship the Link tab is grouped by:
+  // "grp" = one GRP Station -> many RPF Posts (original behaviour, unchanged)
+  // "rpf" = one RPF Post -> many GRP Stations (new)
+  const [linkGroupMode, setLinkGroupMode] = useState("grp");
 
   const [modal, setModal] = useState(null); // { mode, data }
   const [error, setError] = useState("");
@@ -538,7 +543,7 @@ export default function GrpMasterConsole() {
     setPages(prev => ({ ...prev, [activeTab]: newPage }));
   }
 
-  // Cycles the "Linked RPF Posts" sort: none -> most posts first -> fewest posts first -> none.
+  // Cycles the group-count sort: none -> most first -> fewest first -> none.
   function cycleLinkPostSort() {
     setLinkPostSort((prev) => (prev === "none" ? "desc" : prev === "desc" ? "asc" : "none"));
     setPages((prev) => ({ ...prev, link: 1 }));
@@ -741,6 +746,18 @@ export default function GrpMasterConsole() {
     });
   }
 
+  // Quick-add (reverse direction): prefill the RPF Post side from an existing
+  // group so the person only has to pick State / District / Station for the
+  // new GRP link. Mirrors openAddRpfPostForGroup above.
+  function openAddGrpStationForGroup(first) {
+    setError("");
+    setExpandedLinks((prev) => new Set(prev).add(`${first.zone}::${first.division}::${first.post}`));
+    setModal({
+      mode: "add",
+      data: { stateCode: "", districtCode: "", stationCode: "", zone: first.zone, division: first.division, post: first.post },
+    });
+  }
+
   const rowsForTab = { state: states, district: districts, station: stations, link: links }[activeTab];
   const activeCount = rowsForTab.filter((r) => r.status !== "incorrect").length;
   const incorrectCount = rowsForTab.filter((r) => r.status === "incorrect").length;
@@ -758,19 +775,23 @@ export default function GrpMasterConsole() {
     return filtered.slice(startIdx, startIdx + ITEMS_PER_PAGE);
   }, [filtered, pages, activeTab]);
 
-  // Links grouped by their GRP Unit (state/district/station), so a station that's
-  // mapped to several RPF posts shows as one expandable row instead of N flat rows.
-  // Optionally sorted by number of linked RPF posts via linkPostSort.
-  const groupedLinks = useMemo(() => {
+  // Shared filter for the link rows feeding both grouping modes.
+  const linkMatches = useMemo(() => {
     const q = queries.link.trim().toLowerCase();
-    const matches = links.filter((r) => {
+    return links.filter((r) => {
       const inView = view === "incorrect" ? r.status === "incorrect" : r.status !== "incorrect";
       if (!inView) return false;
       if (!q) return true;
       return Object.values(r).some((v) => String(v).toLowerCase().includes(q));
     });
+  }, [links, view, queries.link]);
+
+  // Links grouped by their GRP Unit (state/district/station), so a station that's
+  // mapped to several RPF posts shows as one expandable row instead of N flat rows.
+  // Optionally sorted by number of linked RPF posts via linkPostSort.
+  const groupedLinks = useMemo(() => {
     const map = new Map();
-    matches.forEach((r) => {
+    linkMatches.forEach((r) => {
       const key = `${r.stateCode}::${r.districtCode}::${r.stationCode}`;
       if (!map.has(key)) map.set(key, []);
       map.get(key).push(r);
@@ -779,17 +800,42 @@ export default function GrpMasterConsole() {
     if (linkPostSort === "desc") groups = groups.sort((a, b) => b.entries.length - a.entries.length);
     else if (linkPostSort === "asc") groups = groups.sort((a, b) => a.entries.length - b.entries.length);
     return groups;
-  }, [links, view, queries.link, linkPostSort]);
+  }, [linkMatches, linkPostSort]);
 
-  // Paginated grouped links array
+  // Links grouped by their RPF Unit (zone/division/post) — the reverse view:
+  // one RPF post can cover several GRP stations. Same shape/behaviour as
+  // groupedLinks above, just keyed the other way.
+  const groupedLinksByRpf = useMemo(() => {
+    const map = new Map();
+    linkMatches.forEach((r) => {
+      const key = `${r.zone}::${r.division}::${r.post}`;
+      if (!map.has(key)) map.set(key, []);
+      map.get(key).push(r);
+    });
+    let groups = Array.from(map.entries()).map(([key, entries]) => ({ key, entries }));
+    if (linkPostSort === "desc") groups = groups.sort((a, b) => b.entries.length - a.entries.length);
+    else if (linkPostSort === "asc") groups = groups.sort((a, b) => a.entries.length - b.entries.length);
+    return groups;
+  }, [linkMatches, linkPostSort]);
+
+  // Paginated grouped links array (GRP-Station-first view)
   const paginatedGroupedLinks = useMemo(() => {
-    if (activeTab !== "link") return [];
+    if (activeTab !== "link" || linkGroupMode !== "grp") return [];
     const startIdx = (pages.link - 1) * ITEMS_PER_PAGE;
     return groupedLinks.slice(startIdx, startIdx + ITEMS_PER_PAGE);
-  }, [groupedLinks, pages.link, activeTab]);
+  }, [groupedLinks, pages.link, activeTab, linkGroupMode]);
+
+  // Paginated grouped links array (RPF-Post-first view)
+  const paginatedGroupedLinksByRpf = useMemo(() => {
+    if (activeTab !== "link" || linkGroupMode !== "rpf") return [];
+    const startIdx = (pages.link - 1) * ITEMS_PER_PAGE;
+    return groupedLinksByRpf.slice(startIdx, startIdx + ITEMS_PER_PAGE);
+  }, [groupedLinksByRpf, pages.link, activeTab, linkGroupMode]);
 
   const counts = { state: states.length, district: districts.length, station: stations.length, link: links.length };
-  const isEmpty = activeTab === "link" ? groupedLinks.length === 0 : filtered.length === 0;
+  const isEmpty = activeTab === "link"
+    ? (linkGroupMode === "grp" ? groupedLinks.length === 0 : groupedLinksByRpf.length === 0)
+    : filtered.length === 0;
 
   const LinkSortIcon = linkPostSort === "desc" ? ArrowDown : linkPostSort === "asc" ? ArrowUp : ArrowUpDown;
 
@@ -852,13 +898,36 @@ export default function GrpMasterConsole() {
         </div>
 
         <div className="flex items-center justify-between flex-wrap gap-2">
-          <div className="flex gap-2">
-            <button onClick={() => { setView("active"); setPages(p => ({ ...p, [activeTab]: 1 })); }} className="px-3 py-1.5 rounded-full text-xs font-semibold" style={{ background: view === "active" ? C.navy : C.card, color: view === "active" ? "#fff" : C.sub, border: `1px solid ${view === "active" ? C.navy : C.line}` }}>
-              Active ({activeCount})
-            </button>
-            <button onClick={() => { setView("incorrect"); setPages(p => ({ ...p, [activeTab]: 1 })); }} className="px-3 py-1.5 rounded-full text-xs font-semibold flex items-center gap-1" style={{ background: view === "incorrect" ? C.danger : C.card, color: view === "incorrect" ? "#fff" : C.sub, border: `1px solid ${view === "incorrect" ? C.danger : C.line}` }}>
-              <XCircle size={13} /> Incorrect ({incorrectCount})
-            </button>
+          <div className="flex items-center gap-2 flex-wrap">
+            <div className="flex gap-2">
+              <button onClick={() => { setView("active"); setPages(p => ({ ...p, [activeTab]: 1 })); }} className="px-3 py-1.5 rounded-full text-xs font-semibold" style={{ background: view === "active" ? C.navy : C.card, color: view === "active" ? "#fff" : C.sub, border: `1px solid ${view === "active" ? C.navy : C.line}` }}>
+                Active ({activeCount})
+              </button>
+              <button onClick={() => { setView("incorrect"); setPages(p => ({ ...p, [activeTab]: 1 })); }} className="px-3 py-1.5 rounded-full text-xs font-semibold flex items-center gap-1" style={{ background: view === "incorrect" ? C.danger : C.card, color: view === "incorrect" ? "#fff" : C.sub, border: `1px solid ${view === "incorrect" ? C.danger : C.line}` }}>
+                <XCircle size={13} /> Incorrect ({incorrectCount})
+              </button>
+            </div>
+
+            {activeTab === "link" && (
+              <div className="flex gap-1 p-1 rounded-full" style={{ background: C.bg, border: `1px solid ${C.line}` }}>
+                <button
+                  onClick={() => { setLinkGroupMode("grp"); setPages(p => ({ ...p, link: 1 })); }}
+                  title="One GRP Station can map to several RPF Posts"
+                  className="px-3 py-1 rounded-full text-xs font-semibold"
+                  style={{ background: linkGroupMode === "grp" ? C.amberDeep : "transparent", color: linkGroupMode === "grp" ? "#fff" : C.sub }}
+                >
+                  Group by GRP Station
+                </button>
+                <button
+                  onClick={() => { setLinkGroupMode("rpf"); setPages(p => ({ ...p, link: 1 })); }}
+                  title="One RPF Post can cover several GRP Stations"
+                  className="px-3 py-1 rounded-full text-xs font-semibold"
+                  style={{ background: linkGroupMode === "rpf" ? C.amberDeep : "transparent", color: linkGroupMode === "rpf" ? "#fff" : C.sub }}
+                >
+                  Group by RPF Post
+                </button>
+              </div>
+            )}
           </div>
           <span className="text-xs" style={{ color: C.sub, fontFamily: "IBM Plex Mono, monospace" }}>
             Excel columns: {EXCEL_COLUMNS[activeTab].join(" · ")}
@@ -905,7 +974,7 @@ export default function GrpMasterConsole() {
               <TablePagination currentPage={pages.station} totalItems={filtered.length} onPageChange={(p) => handlePageChange(p)} />
             </>
           )}
-          {activeTab === "link" && (
+          {activeTab === "link" && linkGroupMode === "grp" && (
             <>
               <div className="overflow-x-auto">
                 <table className="w-full text-sm" style={{ borderCollapse: "collapse" }}>
@@ -993,6 +1062,97 @@ export default function GrpMasterConsole() {
                 </table>
               </div>
               <TablePagination currentPage={pages.link} totalItems={groupedLinks.length} onPageChange={(p) => handlePageChange(p)} />
+            </>
+          )}
+          {activeTab === "link" && linkGroupMode === "rpf" && (
+            <>
+              <div className="overflow-x-auto">
+                <table className="w-full text-sm" style={{ borderCollapse: "collapse" }}>
+                  <thead>
+                    <tr style={{ background: C.bg }}>
+                      <th className="text-left px-4 py-3 font-semibold whitespace-nowrap" style={{ color: C.sub, fontSize: 11, textTransform: "uppercase", letterSpacing: 0.5, borderBottom: `1px solid ${C.line}` }}>RPF Unit</th>
+                      <th className="text-right px-4 py-3 font-semibold whitespace-nowrap" style={{ color: C.sub, fontSize: 11, textTransform: "uppercase", letterSpacing: 0.5, borderBottom: `1px solid ${C.line}` }}>
+                        <button
+                          onClick={cycleLinkPostSort}
+                          title={linkPostSort === "none" ? "Sort by number of stations" : linkPostSort === "desc" ? "Sorted: most stations first" : "Sorted: fewest stations first"}
+                          className="inline-flex items-center gap-1 uppercase"
+                          style={{ color: linkPostSort === "none" ? C.sub : C.navy, fontSize: 11, letterSpacing: 0.5, fontWeight: 600 }}
+                        >
+                          Linked GRP Stations <LinkSortIcon size={12} />
+                        </button>
+                      </th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {paginatedGroupedLinksByRpf.map(({ key, entries }) => {
+                      const first = entries[0];
+                      const expanded = expandedLinks.has(key);
+                      const label = `${first.zone} / ${first.division} / ${first.post}`;
+                      const correctCt = entries.filter((e) => e.status === "correct").length;
+                      return (
+                        <React.Fragment key={key}>
+                          <tr
+                            onClick={() => toggleExpandLink(key)}
+                            className="cursor-pointer"
+                            style={{ borderBottom: expanded ? "none" : `1px solid ${C.line}`, background: expanded ? C.bg : "transparent" }}
+                          >
+                            <td className="px-4 py-3 align-top">
+                              <div className="flex items-center gap-2">
+                                <ChevronRight size={14} style={{ transform: expanded ? "rotate(90deg)" : "none", transition: "transform 0.15s ease", color: C.sub, flexShrink: 0 }} />
+                                <span style={{ fontWeight: 600 }}>{label}</span>
+                              </div>
+                            </td>
+                            <td className="px-4 py-3 align-top text-right">
+                              <span className="text-xs px-2.5 py-1 rounded-full" style={{ background: "#EAF0F8", color: C.navy, fontFamily: "IBM Plex Mono, monospace" }}>
+                                {entries.length} station{entries.length !== 1 ? "s" : ""}{view === "active" ? ` · ${correctCt} verified` : ""}
+                              </span>
+                            </td>
+                          </tr>
+                          {expanded && (
+                            <tr style={{ borderBottom: `1px solid ${C.line}` }}>
+                              <td colSpan={2} className="px-0 py-0">
+                                <table className="w-full text-sm" style={{ borderCollapse: "collapse", background: "#FAF9F5" }}>
+                                  <tbody>
+                                    {entries.map((r) => (
+                                      <tr key={r.id} style={{ borderTop: `1px solid ${C.line}` }}>
+                                        <td className="py-2.5 align-top" style={{ paddingLeft: 40, paddingRight: 16, width: "60%" }}>
+                                          <span style={{ color: C.sub }}>{stateName(r.stateCode)} / {districtName(r.stateCode, r.districtCode)} / </span>
+                                          <b>{stationName(r.stateCode, r.districtCode, r.stationCode)}</b>
+                                        </td>
+                                        <td className="px-4 py-2.5 align-top text-right">
+                                          <RowActions status={r.status} view={view}
+                                            onEdit={() => openEdit(r)}
+                                            onDelete={() => askDelete("link", r, `${stationName(r.stateCode, r.districtCode, r.stationCode)} ↔ ${r.post}`)}
+                                            onMarkCorrect={() => markStatus("link", r, "correct")}
+                                            onMarkIncorrect={() => markStatus("link", r, "incorrect")}
+                                            onRestore={() => markStatus("link", r, "pending")}
+                                            onDeletePermanent={() => askDelete("link", r, `${stationName(r.stateCode, r.districtCode, r.stationCode)} ↔ ${r.post}`)} />
+                                        </td>
+                                      </tr>
+                                    ))}
+                                    <tr style={{ borderTop: `1px solid ${C.line}` }}>
+                                      <td colSpan={2} className="py-2 px-4" style={{ paddingLeft: 40 }}>
+                                        <button
+                                          onClick={() => openAddGrpStationForGroup(first)}
+                                          className="flex items-center gap-1 text-xs font-semibold"
+                                          style={{ color: C.amberDeep }}
+                                        >
+                                          <Plus size={13} /> Link another GRP Station here
+                                        </button>
+                                      </td>
+                                    </tr>
+                                  </tbody>
+                                </table>
+                              </td>
+                            </tr>
+                          )}
+                        </React.Fragment>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+              <TablePagination currentPage={pages.link} totalItems={groupedLinksByRpf.length} onPageChange={(p) => handlePageChange(p)} />
             </>
           )}
           {isEmpty && (
